@@ -12,8 +12,14 @@ type Environment struct {
 }
 
 func GetEnvironmentsForProject(ctx context.Context, projectKey string, query string, limit *int) ([]Environment, error) {
+	store := StoreFromContext(ctx)
+	project, err := store.GetDevProject(ctx, projectKey)
+	if err != nil {
+		return nil, err
+	}
+	
 	apiAdapter := adapters.GetApi(ctx)
-	environments, err := apiAdapter.GetProjectEnvironments(ctx, projectKey, query, limit)
+	environments, err := apiAdapter.GetProjectEnvironments(ctx, project.GetCloudProjectKey(), query, limit)
 	if err != nil {
 		return nil, err
 	}

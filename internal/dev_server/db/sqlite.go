@@ -45,18 +45,23 @@ func (s *Sqlite) GetDevProject(ctx context.Context, key string) (*model.Project,
 	var project model.Project
 	var contextData string
 	var flagStateData string
+	var sourceProjectKeyNullable sql.NullString
 
 	row := s.database.QueryRowContext(ctx, `
-        SELECT key, source_environment_key, context, last_sync_time, flag_state 
+        SELECT key, source_environment_key, source_project_key, context, last_sync_time, flag_state 
         FROM projects 
         WHERE key = ?
     `, key)
 
-	if err := row.Scan(&project.Key, &project.SourceEnvironmentKey, &contextData, &project.LastSyncTime, &flagStateData); err != nil {
+	if err := row.Scan(&project.Key, &project.SourceEnvironmentKey, &sourceProjectKeyNullable, &contextData, &project.LastSyncTime, &flagStateData); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, model.NewErrNotFound("project", key)
 		}
 		return nil, err
+	}
+
+	if sourceProjectKeyNullable.Valid {
+		project.SourceProjectKey = sourceProjectKeyNullable.String
 	}
 
 	// Parse the context JSON string
@@ -89,9 +94,9 @@ func (s *Sqlite) UpdateProject(ctx context.Context, project model.Project) (bool
 	}()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE projects
-		SET flag_state = ?, last_sync_time = ?, context=?, source_environment_key=?
+		SET flag_state = ?, last_sync_time = ?, context=?, source_environment_key=?, source_project_key=?
 		WHERE key = ?;
-	`, flagsStateJson, project.LastSyncTime, project.Context.JSONString(), project.SourceEnvironmentKey, project.Key)
+	`, flagsStateJson, project.LastSyncTime, project.Context.JSONString(), project.SourceEnvironmentKey, nullableString(project.SourceProjectKey), project.Key)
 	if err != nil {
 		return false, errors.Wrap(err, "unable to execute update project")
 	}
@@ -200,11 +205,12 @@ SELECT 1 FROM projects WHERE key = ?
 		return
 	}
 	_, err = tx.Exec(`
-INSERT INTO projects (key, source_environment_key, context, last_sync_time, flag_state)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO projects (key, source_environment_key, source_project_key, context, last_sync_time, flag_state)
+VALUES (?, ?, ?, ?, ?, ?)
 `,
 		project.Key,
 		project.SourceEnvironmentKey,
+		nullableString(project.SourceProjectKey),
 		project.Context.JSONString(),
 		project.LastSyncTime,
 		string(flagsStateJson),
@@ -443,12 +449,49 @@ func (s *Sqlite) runMigrations(ctx context.Context) error {
 	CREATE TABLE IF NOT EXISTS projects (
 		key text PRIMARY KEY,
 		source_environment_key text NOT NULL,
+		source_project_key text,
 		context text NOT NULL,
 		last_sync_time timestamp NOT NULL,
 		flag_state TEXT NOT NULL
 	)`)
 	if err != nil {
 		return err
+	}
+
+	// Migration: Add source_project_key column to existing databases
+	// Check if column exists first
+	rows, err := tx.Query(`PRAGMA table_info(projects)`)
+	if err != nil {
+		return err
+	}
+	
+	columnExists := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var dfltValue interface{}
+		var pk int
+		
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &dfltValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		
+		if name == "source_project_key" {
+			columnExists = true
+			break
+		}
+	}
+	rows.Close()
+	
+	// Add column if it doesn't exist
+	if !columnExists {
+		_, err = tx.Exec(`ALTER TABLE projects ADD COLUMN source_project_key text`)
+		if err != nil {
+			return err
+		}
 	}
 
 	_, err = tx.Exec(`
@@ -480,4 +523,13 @@ func (s *Sqlite) runMigrations(ctx context.Context) error {
 	}
 
 	return tx.Commit()
+}
+
+// nullableString returns sql.NullString for database operations.
+// Returns NULL if string is empty, otherwise returns the string value.
+func nullableString(s string) sql.NullString {
+	return sql.NullString{
+		String: s,
+		Valid:  s != "",
+	}
 }

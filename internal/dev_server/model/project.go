@@ -14,10 +14,20 @@ import (
 type Project struct {
 	Key                  string
 	SourceEnvironmentKey string
+	SourceProjectKey     string // The cloud project to sync from (empty if Key should be used)
 	Context              ldcontext.Context
 	LastSyncTime         time.Time
 	AllFlagsState        FlagsState
 	AvailableVariations  []FlagVariation
+}
+
+// GetCloudProjectKey returns the cloud project key to use for API calls.
+// For cloned projects, this returns SourceProjectKey. For regular projects, returns Key.
+func (p *Project) GetCloudProjectKey() string {
+	if p.SourceProjectKey != "" {
+		return p.SourceProjectKey
+	}
+	return p.Key
 }
 
 // CreateProject creates a project and adds it to the database.
@@ -42,6 +52,58 @@ func CreateProject(ctx context.Context, projectKey, sourceEnvironmentKey string,
 		return Project{}, err
 	}
 	return project, nil
+}
+
+// CloneProject creates a copy of an existing project with a new name.
+// The cloned project references the same cloud project for syncing.
+func CloneProject(ctx context.Context, sourceKey, targetKey string, includeOverrides bool) (Project, error) {
+	store := StoreFromContext(ctx)
+	
+	// Fetch source project
+	sourceProject, err := store.GetDevProject(ctx, sourceKey)
+	if err != nil {
+		return Project{}, errors.Wrapf(err, "unable to get source project %s", sourceKey)
+	}
+
+	// Create new project as a clone
+	clonedProject := Project{
+		Key:                  targetKey,
+		SourceEnvironmentKey: sourceProject.SourceEnvironmentKey,
+		SourceProjectKey:     sourceProject.GetCloudProjectKey(), // Point to the cloud project
+		Context:              sourceProject.Context,
+		LastSyncTime:         time.Now(),
+		AllFlagsState:        sourceProject.AllFlagsState,
+		AvailableVariations:  sourceProject.AvailableVariations,
+	}
+
+	// Insert cloned project
+	err = store.InsertProject(ctx, clonedProject)
+	if err != nil {
+		return Project{}, errors.Wrapf(err, "unable to insert cloned project %s", targetKey)
+	}
+
+	// Optionally clone overrides
+	if includeOverrides {
+		sourceOverrides, err := store.GetOverridesForProject(ctx, sourceKey)
+		if err != nil {
+			return Project{}, errors.Wrapf(err, "unable to get overrides for source project %s", sourceKey)
+		}
+
+		for _, override := range sourceOverrides {
+			clonedOverride := Override{
+				ProjectKey: targetKey,
+				FlagKey:    override.FlagKey,
+				Value:      override.Value,
+				Active:     override.Active,
+			}
+			_, err := store.UpsertOverride(ctx, clonedOverride)
+			if err != nil {
+				return Project{}, errors.Wrapf(err, "unable to clone override for flag %s", override.FlagKey)
+			}
+		}
+	}
+
+	return clonedProject, nil
 }
 
 func (project *Project) refreshExternalState(ctx context.Context) error {
@@ -117,7 +179,7 @@ func (project Project) GetFlagStateWithOverridesForProject(ctx context.Context) 
 
 func (project Project) fetchAvailableVariations(ctx context.Context) ([]FlagVariation, error) {
 	apiAdapter := adapters.GetApi(ctx)
-	flags, err := apiAdapter.GetAllFlags(ctx, project.Key)
+	flags, err := apiAdapter.GetAllFlags(ctx, project.GetCloudProjectKey())
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +203,7 @@ func (project Project) fetchAvailableVariations(ctx context.Context) ([]FlagVari
 
 func (project Project) fetchFlagState(ctx context.Context) (FlagsState, error) {
 	apiAdapter := adapters.GetApi(ctx)
-	sdkKey, err := apiAdapter.GetSdkKey(ctx, project.Key, project.SourceEnvironmentKey)
+	sdkKey, err := apiAdapter.GetSdkKey(ctx, project.GetCloudProjectKey(), project.SourceEnvironmentKey)
 	flagsState := make(FlagsState)
 	if err != nil {
 		return flagsState, err

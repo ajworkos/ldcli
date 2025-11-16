@@ -321,3 +321,68 @@ func updateProject(client resources.Client) func(*cobra.Command, []string) error
 		return nil
 	}
 }
+
+func NewCloneProjectCmd(client resources.Client) *cobra.Command {
+	cmd := &cobra.Command{
+		GroupID: "projects",
+		Args:    validators.Validate(),
+		Long:    "Clone an existing project to create a new namespace that syncs from the same cloud project",
+		RunE:    cloneProject(client),
+		Short:   "clone a project",
+		Use:     "clone-project",
+	}
+
+	cmd.SetUsageTemplate(resourcescmd.SubcommandUsageTemplate())
+
+	cmd.Flags().String("source", "", "The source project key to clone from")
+	_ = cmd.MarkFlagRequired("source")
+	_ = cmd.Flags().SetAnnotation("source", "required", []string{"true"})
+	_ = viper.BindPFlag("source", cmd.Flags().Lookup("source"))
+
+	cmd.Flags().String("name", "", "The name for the new cloned project")
+	_ = cmd.MarkFlagRequired("name")
+	_ = cmd.Flags().SetAnnotation("name", "required", []string{"true"})
+	_ = viper.BindPFlag("name", cmd.Flags().Lookup("name"))
+
+	cmd.Flags().Bool("include-overrides", false, "Include overrides from the source project")
+	_ = viper.BindPFlag("include-overrides", cmd.Flags().Lookup("include-overrides"))
+
+	return cmd
+}
+
+type cloneProjectBody struct {
+	SourceProjectKey string `json:"sourceProjectKey"`
+	IncludeOverrides bool   `json:"includeOverrides"`
+}
+
+func cloneProject(client resources.Client) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		sourceKey := viper.GetString("source")
+		targetKey := viper.GetString("name")
+		includeOverrides := viper.GetBool("include-overrides")
+
+		body := cloneProjectBody{
+			SourceProjectKey: sourceKey,
+			IncludeOverrides: includeOverrides,
+		}
+
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+
+		path := fmt.Sprintf("%s/dev/projects/%s/clone", getDevServerUrl(), targetKey)
+		res, err := client.MakeUnauthenticatedRequest(
+			"POST",
+			path,
+			jsonData,
+		)
+		if err != nil {
+			return output.NewCmdOutputError(err, viper.GetString(cliflags.OutputFlag))
+		}
+
+		fmt.Fprint(cmd.OutOrStdout(), string(res))
+
+		return nil
+	}
+}

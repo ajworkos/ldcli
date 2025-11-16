@@ -113,6 +113,38 @@ paths:
           $ref: "#/components/responses/ErrorResponse"
         409:
           $ref: "#/components/responses/ErrorResponse"
+  /projects/{projectKey}/clone:
+    post:
+      summary: Clone an existing project to create a new namespace
+      operationId: postCloneProject
+      parameters:
+        - $ref: "#/components/parameters/projectKey"
+        - $ref: "#/components/parameters/projectExpand"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sourceProjectKey
+              properties:
+                sourceProjectKey:
+                  type: string
+                  description: The key of the project to clone from
+                includeOverrides:
+                  type: boolean
+                  default: false
+                  description: Whether to clone overrides along with the project
+      responses:
+        201:
+          $ref: "#/components/responses/Project"
+        400:
+          $ref: "#/components/responses/ErrorResponse"
+        404:
+          $ref: "#/components/responses/ErrorResponse"
+        409:
+          $ref: "#/components/responses/ErrorResponse"
   /projects/{projectKey}/overrides:
     delete:
       summary: remove all overrides for the given project

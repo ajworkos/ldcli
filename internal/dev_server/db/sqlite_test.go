@@ -399,3 +399,91 @@ func TestDBFunctions(t *testing.T) {
 		require.Len(t, overrides, 0)
 	})
 }
+
+func TestSourceProjectKeyMigration(t *testing.T) {
+	ctx := context.Background()
+	dbName := "test_migration.db"
+
+	store, err := db.NewSqlite(ctx, dbName)
+	require.NoError(t, err)
+
+	defer func() {
+		require.NoError(t, os.Remove(dbName))
+	}()
+
+	t.Run("Existing projects have NULL source_project_key and work correctly", func(t *testing.T) {
+		proj := model.Project{
+			Key:                  "existing-project",
+			SourceEnvironmentKey: "production",
+			Context:              ldcontext.New("test"),
+			AllFlagsState:        model.FlagsState{},
+			AvailableVariations:  []model.FlagVariation{},
+		}
+
+		err := store.InsertProject(ctx, proj)
+		require.NoError(t, err)
+
+		// Retrieve and verify
+		retrieved, err := store.GetDevProject(ctx, "existing-project")
+		require.NoError(t, err)
+		assert.Equal(t, proj.Key, retrieved.Key)
+		assert.Equal(t, "", retrieved.SourceProjectKey) // Should be empty for existing projects
+		assert.Equal(t, proj.Key, retrieved.GetCloudProjectKey()) // Should use Key as cloud project
+	})
+
+	t.Run("Cloned projects have set source_project_key and work correctly", func(t *testing.T) {
+		proj := model.Project{
+			Key:                  "cloned-project",
+			SourceEnvironmentKey: "production",
+			SourceProjectKey:     "original-project",
+			Context:              ldcontext.New("test"),
+			AllFlagsState:        model.FlagsState{},
+			AvailableVariations:  []model.FlagVariation{},
+		}
+
+		err := store.InsertProject(ctx, proj)
+		require.NoError(t, err)
+
+		// Retrieve and verify
+		retrieved, err := store.GetDevProject(ctx, "cloned-project")
+		require.NoError(t, err)
+		assert.Equal(t, proj.Key, retrieved.Key)
+		assert.Equal(t, "original-project", retrieved.SourceProjectKey)
+		assert.Equal(t, "original-project", retrieved.GetCloudProjectKey()) // Should use SourceProjectKey
+	})
+
+	t.Run("UpdateProject preserves source_project_key", func(t *testing.T) {
+		proj := model.Project{
+			Key:                  "update-test-project",
+			SourceEnvironmentKey: "production",
+			SourceProjectKey:     "cloud-project",
+			Context:              ldcontext.New("test"),
+			AllFlagsState: model.FlagsState{
+				"flag1": model.FlagState{Value: ldvalue.Bool(true), Version: 1},
+			},
+			AvailableVariations: []model.FlagVariation{
+				{
+					FlagKey: "flag1",
+					Variation: model.Variation{
+						Id:    "var1",
+						Value: ldvalue.Bool(true),
+					},
+				},
+			},
+		}
+
+		err := store.InsertProject(ctx, proj)
+		require.NoError(t, err)
+
+		// Update the project
+		proj.AllFlagsState["flag2"] = model.FlagState{Value: ldvalue.Bool(false), Version: 1}
+		updated, err := store.UpdateProject(ctx, proj)
+		require.NoError(t, err)
+		assert.True(t, updated)
+
+		// Verify source_project_key is preserved
+		retrieved, err := store.GetDevProject(ctx, "update-test-project")
+		require.NoError(t, err)
+		assert.Equal(t, "cloud-project", retrieved.SourceProjectKey)
+	})
+}
